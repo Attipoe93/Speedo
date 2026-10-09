@@ -1,0 +1,197 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Speedometer Data</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.57.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head><body class="bg-slate-950 text-slate-100 min-h-screen"><div id="app"></div>
+<script>
+const SB_URL='https://rtzzdqhjhlazwgfnrgvq.supabase.co',SB_KEY='sb_publishable_5tLbS2D_PRRcaC9ebeSj2Q_dIJ8e1R-';
+const sb=supabase.createClient(SB_URL,SB_KEY);
+const PFX={MTN:['024','054','055','059','025','053'],Telecel:['020','050'],AirtelTigo:['027','057','026','056']};
+const STAT=['Pending','Processing','Complete','Failed','Cancelled','Refunded'];
+const S={u:null,p:null,pk:[],cfg:{}};let net='MTN',mode='single',V=null;
+const $=s=>document.querySelector(s),app=$('#app');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const GH=n=>'GH₵ '+Number(n||0).toFixed(2);
+const I='w-full rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100',B='rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold px-4 py-2',B2='rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2',C='rounded-2xl bg-slate-900 border border-slate-800 p-4';
+const dt=d=>new Date(d).toLocaleString();
+const msg=(t,bad)=>`<p class="${bad?'text-red-400':'text-emerald-400'} text-sm mt-2" role="alert">${esc(t)}</p>`;
+
+/* ---------- auth / landing ---------- */
+function landing(tab='login'){
+ app.innerHTML=`<main class="max-w-md mx-auto p-6 pt-16"><h1 class="text-4xl font-extrabold text-emerald-400">Speedometer</h1><p class="text-slate-400 mb-6">Fast, reliable data bundles for MTN, Telecel and AirtelTigo.</p>
+ <div class="${C}"><div class="flex gap-2 mb-4"><button id="tl" class="${tab=='login'?B:B2} flex-1">Login</button><button id="ts" class="${tab=='signup'?B:B2} flex-1">Sign up</button></div>
+ <form id="f" class="space-y-3">${tab=='signup'?`<input name="full_name" required placeholder="Full name" class="${I}"><input name="phone" required placeholder="Phone number" class="${I}">`:''}
+ <input name="email" type="email" required placeholder="Email" class="${I}">
+ <div class="flex gap-2"><input id="pw" name="password" type="password" minlength="6" required placeholder="Password" class="${I}"><button type="button" id="eye" class="${B2}" aria-label="Show or hide password">Show</button></div>
+ <button class="${B} w-full">${tab=='login'?'Login':'Create account'}</button><div id="m"></div></form></div></main>`;
+ $('#tl').onclick=()=>landing('login');$('#ts').onclick=()=>landing('signup');
+ $('#eye').onclick=e=>{const p=$('#pw'),h=p.type=='password';p.type=h?'text':'password';e.target.textContent=h?'Hide':'Show'};
+ $('#f').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target));let r;
+  if(tab=='login')r=await sb.auth.signInWithPassword({email:d.email,password:d.password});
+  else r=await sb.auth.signUp({email:d.email,password:d.password,options:{data:{full_name:d.full_name,phone:d.phone}}});
+  if(r.error)return $('#m').innerHTML=msg(r.error.message,1);
+  if(tab=='signup'&&!r.data.session)return $('#m').innerHTML=msg('Account created. Confirm your email if asked, then login.');
+  boot()}}
+async function loadProfile(){const{data}=await sb.from('profiles').select('*').eq('id',S.u.id).single();S.p=data}
+async function boot(){const{data}=await sb.auth.getSession();if(!data.session)return landing();S.u=data.session.user;await loadProfile();const{data:cf}=await sb.from('settings').select('*');S.cfg=Object.fromEntries((cf||[]).map(r=>[r.key,r.value]));
+ if(S.p?.banned)return app.innerHTML=`<main class="max-w-md mx-auto p-6 pt-24 text-center"><h1 class="text-3xl font-bold text-red-400">Account suspended</h1><p class="my-4">Contact support${S.cfg.support_phone?' on '+esc(S.cfg.support_phone):''}.</p><button onclick="sb.auth.signOut().then(()=>location.reload())" class="${B2}">Logout</button></main>`;
+ if(!S.p?.approved)return app.innerHTML=`<main class="max-w-md mx-auto p-6 pt-24 text-center"><h1 class="text-3xl font-bold text-emerald-400">Awaiting approval</h1><p class="text-slate-300 my-4">Your account was created. An admin must approve it before you can use the dashboard.</p><button id="rf" class="${B}">Check again</button> <button id="lo" class="${B2}">Logout</button></main>`,$('#rf').onclick=boot,$('#lo').onclick=out;
+ const{data:pk}=await sb.from('packages').select('*').order('price');S.pk=pk||[];route()}
+const out=async()=>{await sb.auth.signOut();location.hash='';landing()};
+
+/* ---------- shell + router ---------- */
+function shell(title,inner){const L=[['dash','Dashboard'],['packages','Data Packages'],['store','Agent Store'],['orders','Order History'],['tx','Transactions'],['profile','Profile']];if(S.p.role=='admin')L.push(['admin','Admin']);
+ app.innerHTML=`<header class="sticky top-0 z-10 bg-slate-900 border-b border-slate-800"><nav aria-label="Main" class="max-w-5xl mx-auto flex flex-wrap items-center gap-1 p-2"><a href="#/dash" class="font-extrabold text-emerald-400 mr-3">⚡ ${esc(S.cfg.site_name||'Speedometer')}</a>${L.map(l=>`<a href="#/${l[0]}" class="px-3 py-1.5 rounded-lg text-sm ${location.hash=='#/'+l[0]?'bg-emerald-500 text-slate-950':'hover:bg-slate-800'}">${l[1]}</a>`).join('')}<button id="lo" class="ml-auto text-sm px-3 py-1.5 rounded-lg hover:bg-slate-800">Logout</button></nav></header>
+ ${S.cfg.announcement?`<div class="bg-amber-500 text-slate-950 text-center text-sm font-semibold p-2" role="status">${esc(S.cfg.announcement)}</div>`:''}<main class="max-w-5xl mx-auto p-4"><div class="flex justify-between items-center mb-4"><h1 class="text-2xl font-bold">${title}</h1><span class="${C} !py-1 text-sm">Wallet: <b class="text-emerald-400">${GH(S.p.wallet)}</b></span></div>${inner}</main>`;$('#lo').onclick=out}
+function route(){if(!S.p?.approved)return;const r=(location.hash.replace('#/','')||'dash');({dash,packages,store,orders,tx,profile,admin}[r]||dash)()}
+window.onhashchange=route;
+
+/* ---------- dashboard ---------- */
+async function dash(range='week'){const t0=new Date();t0.setHours(0,0,0,0);
+ const since=new Date(Date.now()-(range=='week'?7:30)*864e5).toISOString();
+ const[{count},{data:t}]=await Promise.all([sb.from('orders').select('id',{count:'exact',head:true}).eq('user_id',S.u.id).gte('created_at',t0.toISOString()),sb.from('transactions').select('*').eq('user_id',S.u.id).gte('created_at',since).order('created_at',{ascending:false})]);
+ await loadProfile();const spent=(t||[]).filter(x=>x.type=='purchase').reduce((a,x)=>a+ +x.amount,0);
+ shell('Dashboard',`<div class="grid sm:grid-cols-3 gap-3 mb-4"><div class="${C}"><p class="text-slate-400 text-sm">Wallet balance</p><p class="text-2xl font-bold text-emerald-400">${GH(S.p.wallet)}</p></div><div class="${C}"><p class="text-slate-400 text-sm">Orders placed today</p><p class="text-2xl font-bold">${count||0}</p></div><div class="${C}"><p class="text-slate-400 text-sm">Spent this ${range}</p><p class="text-2xl font-bold">${GH(spent)}</p></div></div>
+ <div class="${C}"><div class="flex justify-between mb-3"><h2 class="font-semibold">Recent transactions</h2><select id="rg" class="${I} !w-auto"><option value="week" ${range=='week'?'selected':''}>Weekly</option><option value="month" ${range=='month'?'selected':''}>Monthly</option></select></div>${txTable(t)}</div>`);
+ $('#rg').onchange=e=>dash(e.target.value)}
+const txTable=t=>`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="text-slate-400 text-left"><tr><th>Date</th><th>Type</th><th>Ref</th><th>Balance before</th><th>Amount</th><th>Balance after</th></tr></thead><tbody>${(t||[]).map(x=>`<tr class="border-t border-slate-800"><td class="py-2">${dt(x.created_at)}</td><td>${x.type}</td><td>${esc(x.ref)}</td><td>${GH(x.balance_before)}</td><td class="${!['purchase','deduction'].includes(x.type)?'text-emerald-400':'text-amber-400'}">${['purchase','deduction'].includes(x.type)?'-':'+'}${GH(x.amount)}</td><td>${GH(x.balance_after)}</td></tr>`).join('')||'<tr><td class="py-3 text-slate-400">No transactions.</td></tr>'}</tbody></table></div>`;
+
+/* ---------- data packages ---------- */
+const fmt=n=>{n=String(n??'').replace(/\D/g,'');if(n.length==12&&n.startsWith('233'))return '0'+n.slice(3);if(n.length==9)return '0'+n;return n};
+const gbOf=p=>{const m=/(\d+(?:\.\d+)?)\s*GB/i.exec(p.name);return m?+m[1]:null};
+function packages(){V=null;const list=S.pk.filter(p=>p.network==net);
+ shell('Data Packages',`<div class="flex gap-2 mb-3">${Object.keys(PFX).map(n=>`<button data-n="${n}" class="${n==net?B:B2}">${n}</button>`).join('')}</div>
+ <div class="${C} space-y-3"><div class="flex gap-2">${[['single','Single order'],['bulk','In bulk'],['excel','Excel import']].map(m=>`<button data-m="${m[0]}" class="${m[0]==mode?B:B2} text-sm">${m[1]}</button>`).join('')}</div>
+ ${mode=='single'?`<label class="block text-sm">${net} package<select id="pkg" class="${I}">${list.map(p=>`<option value="${p.id}">${esc(p.name)} - ${GH(p.price)}</option>`).join('')||'<option value="">No packages</option>'}</select></label><input id="nums" inputmode="numeric" placeholder="Phone number e.g. 0241234567" aria-label="Phone number" class="${I}">`
+ :`<p class="text-sm text-slate-400">Type only the number, a space, then the GB figure without the letters GB. Example: 0241234567 5 buys 5GB. Several numbers can share one figure: 0241111111 0242222222 5. Available GB: ${list.map(gbOf).filter(x=>x!=null).join(', ')||'none'}.</p><textarea id="nums" rows="7" placeholder="0241234567 5" aria-label="Numbers and GB" class="${I}"></textarea>`}
+ ${mode=='excel'?`<input id="xl" type="file" accept=".xlsx,.xls,.csv" class="text-sm"><p class="text-xs text-slate-400">Column A: number. Column B: GB. It fills the box above so you can check it.</p>`:''}
+ <button id="val" class="${B}">Validate</button><div id="res"></div></div>`);
+ document.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>{net=b.dataset.n;packages()});
+ document.querySelectorAll('[data-m]').forEach(b=>b.onclick=()=>{mode=b.dataset.m;packages()});
+ if($('#xl'))$('#xl').onchange=async e=>{const f=e.target.files[0];if(!f)return;const w=XLSX.read(await f.arrayBuffer());const rows=XLSX.utils.sheet_to_json(w.Sheets[w.SheetNames[0]],{header:1});$('#nums').value=rows.filter(r=>r[0]!=null&&r[0]!=='').map(r=>fmt(r[0])+' '+(r[1]??'')).join('\n')};
+ $('#val').onclick=validate}
+async function validate(){const list=S.pk.filter(p=>p.network==net),items=[],bad=[];
+ if(mode=='single'){const p=list.find(x=>x.id==$('#pkg')?.value);if(!p)return $('#res').innerHTML=msg('Choose a package first.',1);items.push({n:fmt($('#nums').value),p})}
+ else $('#nums').value.split('\n').map(l=>l.trim()).filter(Boolean).forEach(l=>{const t=l.split(/[\s,;]+/).filter(Boolean),last=t[t.length-1].replace(/gb$/i,'');
+  if(t.length<2||!/^\d{1,4}(\.\d+)?$/.test(last))return bad.push([t[0]||l,'Missing GB figure. Write the number, a space, then only the GB (example 0241234567 5)']);
+  const g=parseFloat(last),p=list.find(x=>gbOf(x)===g);
+  t.slice(0,-1).forEach(x=>{const n=fmt(x);if(!p)return bad.push([n,`No ${g}GB package for ${net}`]);items.push({n,p})})});
+ const{data:rec}=await sb.from('orders').select('number').eq('user_id',S.u.id).gte('created_at',new Date(Date.now()-3e5).toISOString()).in('status',['Pending','Processing']);
+ const busy=new Set((rec||[]).map(r=>r.number)),seen=new Set(),ok=[],mis=[];
+ items.forEach(i=>{if(seen.has(i.n))return bad.push([i.n,'Duplicate in list']);seen.add(i.n);
+  if(!/^0\d{9}$/.test(i.n))return bad.push([i.n,'Invalid number length or format']);
+  if(busy.has(i.n))return bad.push([i.n,'This number is not yet delivered, please wait']);
+  (PFX[net].includes(i.n.slice(0,3))?ok:mis).push(i)});
+ if(!items.length&&!bad.length)return $('#res').innerHTML=msg('Nothing to validate.',1);
+ V={ok,mis,bad,ported:[]};draw()}
+function draw(){const{ok,mis,bad}=V,keep=[...ok,...mis.filter(i=>V.ported.includes(i.n))],tot=keep.reduce((s,i)=>s+ +i.p.price,0),after=S.p.wallet-tot;
+ $('#res').innerHTML=`<div class="space-y-3 mt-2" aria-live="polite">${mis.length?`<div class="rounded-lg border border-amber-500 p-3"><p class="font-semibold text-amber-400">Flagged and excluded: prefix mismatch</p>${mis.map(i=>`<label class="flex gap-2 text-sm py-1"><input type="checkbox" class="pt" value="${i.n}" ${V.ported.includes(i.n)?'checked':''}> ${i.n}: This number is not ${net}. Tick if it was ported to ${net}.</label>`).join('')}</div>`:''}
+ ${bad.length?`<div class="rounded-lg border border-red-500 p-3"><p class="font-semibold text-red-400">Errors (${bad.length}), not included</p>${bad.map(b=>`<p class="text-sm">${esc(b[0])}: ${b[1]}</p>`).join('')}</div>`:''}
+ <div class="rounded-lg border border-slate-700 p-3 text-sm overflow-x-auto"><p class="font-semibold mb-1">Order preview (${keep.length})</p><table class="w-full"><tbody>${keep.map(i=>`<tr class="border-t border-slate-800"><td class="py-1">${i.n}</td><td>${net} ${esc(i.p.name)}</td><td>${GH(i.p.price)}</td></tr>`).join('')||'<tr><td>No valid numbers.</td></tr>'}</tbody></table></div>
+ <div class="rounded-lg border border-emerald-600 p-3 text-sm"><p>Wallet Before: <b>${GH(S.p.wallet)}</b></p><p>Order Total: <b>${GH(tot)}</b></p><p>Wallet After: <b class="${after<0?'text-red-400':''}">${GH(after)}</b></p>${after<0?'<p class="text-red-400">Insufficient balance.</p>':''}</div>
+ <div class="flex gap-2"><button id="go" class="${B}" ${after<0||!keep.length?'disabled style="opacity:.4"':''}>Confirm and pay</button><button id="cx" class="${B2}">Cancel</button></div><div id="pm"></div></div>`;
+ document.querySelectorAll('.pt').forEach(c=>c.onchange=()=>{V.ported=[...document.querySelectorAll('.pt:checked')].map(x=>x.value);draw()});
+ $('#cx').onclick=()=>{V=null;$('#res').innerHTML=''};
+ $('#go').onclick=async()=>{$('#go').disabled=true;const{error}=await sb.rpc('place_orders',{p_items:keep.map(i=>({number:i.n,pkg:i.p.id}))});if(error){$('#go').disabled=false;return $('#pm').innerHTML=msg(error.message,1)}await loadProfile();V=null;$('#nums').value='';$('#res').innerHTML=msg(`Order placed for ${keep.length} number(s). Wallet: ${GH(S.p.wallet)}`)}}
+
+/* ---------- agent store ---------- */
+async function store(){const[{data:ap},{data:o},{data:rq}]=await Promise.all([sb.from('agent_prices').select('*').eq('user_id',S.u.id),sb.from('orders').select('*').eq('agent_id',S.u.id).order('created_at',{ascending:false}).limit(100),sb.from('store_requests').select('*').eq('agent_id',S.u.id).order('created_at',{ascending:false}).limit(100)]);
+ const m=Object.fromEntries((ap||[]).map(a=>[a.package_id,a.price])),pk=id=>S.pk.find(p=>p.id==id)||{name:'?',network:'',price:0};
+ const link=location.origin+location.pathname+'?store='+S.p.slug,sv=x=>+(x.sale_price??x.amount),sales=(o||[]).reduce((a,x)=>a+sv(x),0),profit=(o||[]).reduce((a,x)=>a+sv(x)- +x.amount,0),nw=(rq||[]).filter(r=>r.status=='New');
+ shell('Agent Store',`<div class="${C} mb-4"><p class="text-sm text-slate-400">Your unique store link. Customers open it, choose a package and send you an order request.</p><div class="flex gap-2 mt-1"><input readonly value="${link}" class="${I}" id="lk" aria-label="Store link"><button id="cp" class="${B}">Copy</button></div>
+ <label class="block text-sm mt-3">How customers pay you (shown on your store, e.g. MoMo number and name)<textarea id="mo" rows="2" class="${I}">${esc(S.p.store_momo||'')}</textarea></label><button id="mv" class="${B2} mt-2 text-sm">Save payment details</button><span id="mm"></span></div>
+ <div class="${C} mb-4"><h2 class="font-semibold mb-1">New customer requests (${nw.length})</h2><p class="text-xs text-slate-400 mb-2">Confirm you received the customer's payment, then press Fulfil. The base price is taken from your wallet and the order is sent.</p><div id="rm" class="text-sm"></div>${nw.map(r=>`<div class="flex flex-wrap items-center gap-2 border-t border-slate-800 py-2 text-sm"><span class="flex-1 min-w-[220px]">${dt(r.created_at)} · ${esc(r.customer_name||'Customer')} · ${r.number} · ${pk(r.package_id).network} ${esc(pk(r.package_id).name)} · sells ${GH(r.sale_price)} · base ${GH(pk(r.package_id).price)}</span><button data-f="${r.id}" class="${B} text-xs">Fulfil</button><button data-r="${r.id}" class="${B2} text-xs">Reject</button></div>`).join('')||'<p class="text-slate-400">No new requests.</p>'}</div>
+ <div class="${C} mb-4"><h2 class="font-semibold mb-2">Set your selling prices</h2>${S.pk.map(p=>`<div class="flex items-center gap-2 py-1 text-sm"><span class="flex-1">${p.network} ${esc(p.name)} (base ${GH(p.price)})</span><input type="number" step="0.01" min="${p.price}" data-p="${p.id}" value="${m[p.id]??''}" placeholder="${p.price}" aria-label="Price for ${p.network} ${esc(p.name)}" class="${I} !w-28"></div>`).join('')}<button id="sv" class="${B} mt-3">Save prices</button><span id="sm"></span></div>
+ <div class="${C}"><h2 class="font-semibold">Store orders and sales</h2><p class="text-sm text-slate-400 mb-2">${(o||[]).length} orders · Sales ${GH(sales)} · Profit ${GH(profit)}</p>${(o||[]).map(x=>`<p class="text-sm border-t border-slate-800 py-1">${dt(x.created_at)} · ${x.network} ${esc(x.package_name)} · ${x.number} · sold ${GH(sv(x))} · cost ${GH(x.amount)} · ${x.status}</p>`).join('')}</div>`);
+ $('#cp').onclick=()=>{navigator.clipboard.writeText($('#lk').value);$('#cp').textContent='Copied'};
+ $('#mv').onclick=async()=>{const{error}=await sb.from('profiles').update({store_momo:$('#mo').value}).eq('id',S.u.id);await loadProfile();$('#mm').innerHTML=msg(error?error.message:'Saved',!!error)};
+ $('#sv').onclick=async()=>{const rows=[...document.querySelectorAll('[data-p]')].filter(i=>i.value).map(i=>({user_id:S.u.id,package_id:+i.dataset.p,price:+i.value}));const{error}=await sb.from('agent_prices').upsert(rows);$('#sm').innerHTML=msg(error?error.message:'Saved',!!error)};
+ const act=async(id,rj)=>{const{error}=await sb.rpc('store_fulfill',{p_id:id,p_reject:rj});if(error)return $('#rm').innerHTML=msg(error.message,1);await loadProfile();store()};
+ document.querySelectorAll('[data-f]').forEach(b=>b.onclick=()=>act(b.dataset.f,false));document.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>act(b.dataset.r,true))}
+async function publicStore(slug){const{data}=await sb.rpc('store_public',{p_slug:slug});
+ if(!data)return app.innerHTML=`<main class="max-w-md mx-auto p-6 pt-24 text-center"><h1 class="text-2xl font-bold text-red-400">Store not found</h1></main>`;
+ let sn='MTN';const draw=()=>{const it=data.items.filter(i=>i.network==sn);
+  app.innerHTML=`<main class="max-w-md mx-auto p-6"><h1 class="text-3xl font-extrabold text-emerald-400">${esc(data.name)}</h1><p class="text-slate-400 mb-4">Buy data bundles. Choose a network and a package.</p><div class="flex gap-2 mb-3">${Object.keys(PFX).map(n=>`<button data-n="${n}" class="${n==sn?B:B2}">${n}</button>`).join('')}</div>
+  <form id="sf" class="${C} space-y-3"><label class="block text-sm">Package<select name="pkg" class="${I}">${it.map(p=>`<option value="${p.id}">${esc(p.name)} - ${GH(p.price)}</option>`).join('')||'<option value="">No packages</option>'}</select></label><input name="number" required inputmode="numeric" placeholder="Phone number to receive the data" aria-label="Phone number" class="${I}"><input name="name" placeholder="Your name (optional)" class="${I}"><button class="${B} w-full">Place order request</button><div id="m" aria-live="polite"></div></form>
+  ${data.momo?`<div class="${C} mt-3 text-sm"><b>How to pay:</b><p class="whitespace-pre-line">${esc(data.momo)}</p></div>`:''}</main>`;
+  document.querySelectorAll('[data-n]').forEach(b=>b.onclick=()=>{sn=b.dataset.n;draw()});
+  $('#sf').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target)),n=fmt(d.number),p=it.find(x=>x.id==d.pkg);
+   if(!p)return $('#m').innerHTML=msg('Choose a package.',1);if(!/^0\d{9}$/.test(n))return $('#m').innerHTML=msg('Enter a valid 10-digit number.',1);
+   if(!PFX[sn].includes(n.slice(0,3)))return $('#m').innerHTML=msg(`This number is not ${sn}. Check the network you selected.`,1);
+   const{error}=await sb.rpc('store_request',{p_slug:slug,p_number:n,p_pkg:p.id,p_name:d.name||''});if(error)return $('#m').innerHTML=msg(error.message,1);
+   $('#m').innerHTML=msg(`Request sent for ${n}: ${sn} ${p.name}. Pay ${GH(p.price)} using the details below. Your data is delivered once the agent confirms your payment.`)}};draw()}
+
+/* ---------- histories ---------- */
+async function orders(){const{data}=await sb.from('orders').select('*').eq('user_id',S.u.id).order('created_at',{ascending:false}).limit(500);
+ shell('Order History',`<div class="${C} grid sm:grid-cols-3 gap-2 mb-3"><select id="fs" class="${I}"><option value="">All statuses</option>${STAT.map(s=>`<option>${s}</option>`).join('')}</select><select id="fn" class="${I}"><option value="">All networks</option>${Object.keys(PFX).map(s=>`<option>${s}</option>`).join('')}</select><input id="fp" placeholder="Number" class="${I}"><input id="fi" placeholder="Transaction ID" class="${I}"><input id="fa" type="datetime-local" class="${I}" aria-label="From"><input id="fb" type="datetime-local" class="${I}" aria-label="To"></div><div id="ol" class="${C}"></div>`);
+ const f=()=>{const s=$('#fs').value,n=$('#fn').value,p=$('#fp').value.trim(),i=$('#fi').value.trim().toLowerCase(),a=$('#fa').value,b=$('#fb').value;
+  const r=data.filter(x=>(!s||x.status==s)&&(!n||x.network==n)&&(!p||x.number.includes(p))&&(!i||x.ref.toLowerCase().includes(i))&&(!a||new Date(x.created_at)>=new Date(a))&&(!b||new Date(x.created_at)<=new Date(b)));
+  $('#ol').innerHTML=`<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="text-slate-400 text-left"><tr><th>Date</th><th>ID</th><th>Network</th><th>Package</th><th>Number</th><th>Amount</th><th>Status</th></tr></thead><tbody>${r.map(x=>`<tr class="border-t border-slate-800"><td class="py-2">${dt(x.created_at)}</td><td>${esc(x.ref)}</td><td>${x.network}</td><td>${esc(x.package_name)}</td><td>${x.number}</td><td>${GH(x.amount)}</td><td>${x.status}</td></tr>`).join('')||'<tr><td class="py-3">No orders match.</td></tr>'}</tbody></table></div>`};
+ document.querySelectorAll('#app select,#app input').forEach(e=>e.oninput=f);f()}
+async function tx(){const{data}=await sb.from('transactions').select('*').eq('user_id',S.u.id).order('created_at',{ascending:false}).limit(500);shell('Transaction History',`<div class="${C}">${txTable(data)}</div>`)}
+
+/* ---------- profile + admin ---------- */
+function aPk(){const box=document.createElement('div');box.className='mt-6';$('#tb').appendChild(box);const nets=s=>Object.keys(PFX).map(n=>`<option ${n==s?'selected':''}>${n}</option>`).join('');
+ const rd=()=>{box.innerHTML=`<h2 class="font-semibold mb-1">Data packages and base prices</h2><p class="text-xs text-slate-400 mb-2">Name each package by its size, like 5GB. Bulk orders match the GB figure typed by the user.</p>${S.pk.map(p=>`<div class="flex flex-wrap gap-2 items-center py-1"><select data-i="${p.id}" data-f="network" aria-label="Network" class="${I} !w-32">${nets(p.network)}</select><input data-i="${p.id}" data-f="name" value="${esc(p.name)}" aria-label="Package name" class="${I} !w-24"><input data-i="${p.id}" data-f="price" type="number" step="0.01" value="${p.price}" aria-label="Price" class="${I} !w-24"><button data-sv="${p.id}" class="${B2} text-xs">Save</button><button data-dl="${p.id}" class="${B2} text-xs">Delete</button></div>`).join('')}
+  <div class="flex flex-wrap gap-2 items-center py-2 border-t border-slate-800 mt-2"><select id="nn" aria-label="New network" class="${I} !w-32">${nets('')}</select><input id="nname" placeholder="5GB" aria-label="New package name" class="${I} !w-24"><input id="npr" type="number" step="0.01" placeholder="Price" aria-label="New price" class="${I} !w-24"><button id="nadd" class="${B} text-sm">Add package</button></div><p id="pkm" class="text-sm"></p>`;
+  const done=async e=>{if(e)return $('#pkm').innerHTML=msg(e.message,1);const{data}=await sb.from('packages').select('*').order('price');S.pk=data||[];rd()};
+  document.querySelectorAll('[data-sv]').forEach(b=>b.onclick=async()=>{const g=f=>document.querySelector(`[data-i="${b.dataset.sv}"][data-f="${f}"]`).value;const{error}=await sb.from('packages').update({network:g('network'),name:g('name'),price:+g('price')}).eq('id',b.dataset.sv);done(error)});
+  document.querySelectorAll('[data-dl]').forEach(b=>b.onclick=async()=>{if(!confirm('Delete this package?'))return;const{error}=await sb.from('packages').delete().eq('id',b.dataset.dl);done(error)});
+  $('#nadd').onclick=async()=>{if(!$('#nname').value||!(+$('#npr').value>0))return $('#pkm').innerHTML=msg('Enter a name and a price.',1);const{error}=await sb.from('packages').insert({network:$('#nn').value,name:$('#nname').value,price:+$('#npr').value});done(error)}};rd()}
+
+function profile(){shell('Profile',`<form id="pf" class="${C} max-w-md space-y-3"><label class="block text-sm">Full name<input name="full_name" value="${esc(S.p.full_name)}" class="${I}"></label><label class="block text-sm">Phone<input name="phone" value="${esc(S.p.phone)}" class="${I}"></label><p class="text-sm text-slate-400">Email: ${esc(S.u.email)}</p><button class="${B}">Save details</button><div id="m"></div></form>
+ <form id="pw" class="${C} max-w-md space-y-3 mt-4"><label class="block text-sm">New password<input name="p" type="password" minlength="6" required class="${I}"></label><button class="${B}">Change password</button><div id="m2"></div></form>`);
+ $('#pf').onsubmit=async e=>{e.preventDefault();const{error}=await sb.from('profiles').update(Object.fromEntries(new FormData(e.target))).eq('id',S.u.id);await loadProfile();$('#m').innerHTML=msg(error?error.message:'Saved',!!error)};
+ $('#pw').onsubmit=async e=>{e.preventDefault();const{error}=await sb.auth.updateUser({password:new FormData(e.target).get('p')});$('#m2').innerHTML=msg(error?error.message:'Password changed',!!error)}}
+let atab='tx',ast='Pending',eu=null;const sel=new Set();
+async function admin(){
+ const[a,b,c]=await Promise.all([sb.from('profiles').select('*').order('full_name'),sb.from('orders').select('*').order('created_at',{ascending:false}).limit(1000),sb.from('transactions').select('*').order('created_at',{ascending:false}).limit(500)]);
+ const us=a.data||[],o=b.data||[],t=c.data||[],nm=Object.fromEntries(us.map(u=>[u.id,u.full_name||u.phone||'user']));
+ const d0=new Date();d0.setHours(0,0,0,0);const td=o.filter(x=>new Date(x.created_at)>=d0);
+ const pend=us.filter(u=>!u.approved&&!u.banned),stuck=o.filter(x=>['Pending','Processing'].includes(x.status)&&Date.now()-new Date(x.created_at)>18e5),failed=o.filter(x=>x.status=='Failed');
+ const st=(l,v,c='')=>`<div class="${C}"><p class="text-slate-400 text-xs">${l}</p><p class="text-xl font-bold ${c}">${v}</p></div>`;
+ const tabs=[['tx','Transactions'],['ord','Order Management'],['usr','User Management'],['set','Settings']];
+ shell('Admin',`<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">${st('Users',us.length)}${st('Awaiting approval',pend.length,pend.length?'text-amber-400':'')}${st('Orders today',td.length)}${st('Sales today',GH(td.reduce((s,x)=>s+ +x.amount,0)))}${st('Pending orders',o.filter(x=>x.status=='Pending').length)}${st('Stuck over 30 min',stuck.length,stuck.length?'text-red-400':'')}${st('Failed orders',failed.length)}${st('User wallets total',GH(us.reduce((s,u)=>s+ +u.wallet,0)))}</div>
+ ${pend.length||stuck.length||failed.length?`<div class="${C} mb-3 text-sm"><b class="text-amber-400">Needs attention:</b> ${pend.length} account(s) awaiting approval, ${stuck.length} order(s) stuck over 30 minutes, ${failed.length} failed order(s).</div>`:''}
+ <div class="flex flex-wrap gap-2 mb-3">${tabs.map(x=>`<button data-tab="${x[0]}" class="${x[0]==atab?B:B2} text-sm">${x[1]}</button>`).join('')}</div><div id="tb" class="${C}"></div>`);
+ document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{atab=b.dataset.tab;admin()});
+ ({tx:()=>aTx(t,nm),ord:()=>aOrd(o,nm),usr:()=>aUsr(us),set:aSet}[atab])()}
+function aTx(t,nm){$('#tb').innerHTML=`<select id="ty" aria-label="Type" class="${I} !w-auto mb-2"><option value="">All types</option><option>topup</option><option>purchase</option><option>refund</option><option>deduction</option></select><div id="tl" class="overflow-x-auto"></div>`;
+ const f=()=>{const y=$('#ty').value,r=t.filter(x=>!y||x.type==y);$('#tl').innerHTML=`<table class="w-full text-sm"><thead class="text-slate-400 text-left"><tr><th>Date</th><th>User</th><th>Type</th><th>Ref</th><th>Before</th><th>Amount</th><th>After</th></tr></thead><tbody>${r.map(x=>`<tr class="border-t border-slate-800"><td class="py-2">${dt(x.created_at)}</td><td>${esc(nm[x.user_id])}</td><td>${x.type}</td><td>${esc(x.ref)}</td><td>${GH(x.balance_before)}</td><td>${GH(x.amount)}</td><td>${GH(x.balance_after)}</td></tr>`).join('')||'<tr><td class="py-3">No transactions.</td></tr>'}</tbody></table>`};$('#ty').onchange=f;f()}
+function aOrd(o,nm){const opts=s=>STAT.map(x=>`<option ${x==s?'selected':''}>${x}</option>`).join('');
+ $('#tb').innerHTML=`<div class="flex flex-wrap gap-2 mb-2"><select id="os" aria-label="Filter status" class="${I} !w-auto"><option value="">All statuses</option>${opts(ast)}</select><button id="sa" class="${B2} text-sm">Select all shown</button><button id="sn" class="${B2} text-sm">Clear selection</button><button id="mp" class="${B} text-sm">Move selected to Processing</button><button id="cc" class="${B2} text-sm">Copy selected</button></div>
+ <div class="flex flex-wrap gap-2 mb-2 items-center"><select id="ns" aria-label="New status" class="${I} !w-auto">${opts('Complete')}</select><button id="ap" class="${B2} text-sm">Set status of selected</button><span class="text-xs text-slate-400">Failed, Cancelled and Refunded return the money to the user's wallet.</span></div>
+ <textarea id="pn" rows="2" placeholder="Paste numbers here, then press Select pasted" class="${I} mb-2"></textarea><button id="pm" class="${B2} text-sm">Select pasted</button><p id="om" class="text-sm my-2" aria-live="polite"></p><div id="ol2" class="overflow-x-auto"></div>`;
+ const shown=o.filter(x=>!ast||x.status==ast),info=()=>$('#om').textContent=sel.size+' order(s) selected';
+ const rd=()=>{$('#ol2').innerHTML=`<table class="w-full text-sm"><thead class="text-slate-400 text-left"><tr><th></th><th>Date</th><th>User</th><th>Order</th><th>Number</th><th>Amount</th><th>Status</th></tr></thead><tbody>${shown.map(x=>`<tr class="border-t border-slate-800"><td class="py-2"><input type="checkbox" class="rc" value="${x.id}" aria-label="Select ${x.number}" ${sel.has(x.id)?'checked':''}></td><td>${dt(x.created_at)}</td><td>${esc(nm[x.user_id])}</td><td>${x.network} ${esc(x.package_name)}</td><td>${x.number}</td><td>${GH(x.amount)}</td><td>${x.status}</td></tr>`).join('')||'<tr><td class="py-3">No orders.</td></tr>'}</tbody></table>`;
+  document.querySelectorAll('.rc').forEach(c=>c.onchange=()=>{c.checked?sel.add(c.value):sel.delete(c.value);info()});info()};rd();
+ $('#os').onchange=e=>{ast=e.target.value;aOrd(o,nm)};
+ $('#sa').onclick=()=>{shown.forEach(x=>sel.add(x.id));rd()};$('#sn').onclick=()=>{sel.clear();rd()};
+ $('#pm').onclick=()=>{const s=new Set($('#pn').value.split(/[\s,;]+/).filter(Boolean).map(fmt));shown.filter(x=>s.has(x.number)).forEach(x=>sel.add(x.id));rd()};
+ $('#cc').onclick=async()=>{const t=o.filter(x=>sel.has(x.id)).map(x=>x.number+' '+x.package_name.replace(/gb/i,'').trim()).join('\n');await navigator.clipboard.writeText(t);$('#om').textContent=sel.size+' order(s) copied to clipboard'};
+ const run=async s=>{if(!sel.size)return $('#om').textContent='Select at least one order first.';const{error}=await sb.rpc('admin_set_status',{p_ids:[...sel],p_status:s});if(error)return $('#om').textContent=error.message;sel.clear();admin()};
+ $('#mp').onclick=()=>run('Processing');$('#ap').onclick=()=>run($('#ns').value)}
+function aUsr(us){const e=us.find(u=>u.id==eu),fi=`class="${I}"`;
+ $('#tb').innerHTML=`<details class="mb-3"><summary class="cursor-pointer font-semibold">Add new user</summary><form id="nf" class="grid sm:grid-cols-2 gap-2 mt-2"><input name="full_name" required placeholder="Full name" ${fi}><input name="phone" required placeholder="Phone" ${fi}><input name="email" type="email" required placeholder="Email" ${fi}><input name="password" minlength="6" required placeholder="Password (6+ characters)" ${fi}><button class="${B} sm:col-span-2">Create approved user</button></form><div id="nm"></div></details>
+ ${e?`<form id="ef" class="grid sm:grid-cols-2 gap-2 mb-3 border border-emerald-600 rounded-xl p-3"><p class="sm:col-span-2 font-semibold">Edit ${esc(e.full_name)}</p><input name="full_name" value="${esc(e.full_name)}" ${fi}><input name="phone" value="${esc(e.phone)}" ${fi}><select name="role" ${fi}><option ${e.role=='user'?'selected':''}>user</option><option ${e.role=='admin'?'selected':''}>admin</option></select><div class="flex gap-2"><button class="${B}">Save</button><button type="button" id="ec" class="${B2}">Cancel</button></div></form>`:''}
+ <input id="q" placeholder="Search name or phone" aria-label="Search users" ${fi}><div id="ul" class="mt-2"></div><div id="um" class="text-sm"></div>`;
+ const rd=()=>{const q=$('#q').value.toLowerCase();$('#ul').innerHTML=us.filter(u=>(u.full_name+' '+u.phone).toLowerCase().includes(q)).map(u=>`<div class="flex flex-wrap items-center gap-2 border-t border-slate-800 py-2 text-sm"><span class="flex-1 min-w-[200px]">${esc(u.full_name)} · ${esc(u.phone)} · ${GH(u.wallet)} · ${u.role} · ${u.banned?'<b class=text-red-400>Banned</b>':u.approved?'Active':'<b class=text-amber-400>Pending</b>'}</span><button data-e="${u.id}" class="${B2} text-xs">Edit</button>${u.approved?'':`<button data-a="${u.id}" class="${B} text-xs">Approve</button>`}<button data-b="${u.id}" class="${B2} text-xs">${u.banned?'Unban':'Ban'}</button><input type="number" min="1" id="t${u.id}" placeholder="Amount" aria-label="Amount to top up or deduct" class="${I} !w-24 !py-1"><button data-t="${u.id}" class="${B2} text-xs">Top up</button><button data-d="${u.id}" class="${B2} text-xs">Deduct</button></div>`).join('')||'<p class="py-2">No users.</p>';
+  const up=async(id,d)=>{const{error}=await sb.from('profiles').update(d).eq('id',id);if(error)return $('#um').innerHTML=msg(error.message,1);eu=null;admin()};
+  document.querySelectorAll('[data-e]').forEach(b=>b.onclick=()=>{eu=b.dataset.e;admin()});
+  document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>up(b.dataset.a,{approved:true}));
+  document.querySelectorAll('[data-b]').forEach(b=>b.onclick=()=>{const u=us.find(x=>x.id==b.dataset.b);if(u.id==S.u.id)return $('#um').innerHTML=msg('You cannot ban yourself.',1);up(u.id,{banned:!u.banned})});
+  document.querySelectorAll('[data-t]').forEach(b=>b.onclick=async()=>{const v=+$('#t'+b.dataset.t).value;if(!(v>0))return;const{error}=await sb.rpc('admin_topup',{p_user:b.dataset.t,p_amount:v});if(error)return $('#um').innerHTML=msg(error.message,1);admin()});
+  document.querySelectorAll('[data-d]').forEach(b=>b.onclick=async()=>{const v=+$('#t'+b.dataset.d).value;if(!(v>0))return;const{error}=await sb.rpc('admin_deduct',{p_user:b.dataset.d,p_amount:v});if(error)return $('#um').innerHTML=msg(error.message,1);admin()})};rd();$('#q').oninput=rd;
+ if(e){$('#ec').onclick=()=>{eu=null;admin()};$('#ef').onsubmit=ev=>{ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));sb.from('profiles').update(d).eq('id',eu).then(({error})=>{if(error)return $('#um').innerHTML=msg(error.message,1);eu=null;admin()})}}
+ $('#nf').onsubmit=async ev=>{ev.preventDefault();const d=Object.fromEntries(new FormData(ev.target));const c2=supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:false,autoRefreshToken:false,storageKey:'sb-tmp'}});
+  const{data,error}=await c2.auth.signUp({email:d.email,password:d.password,options:{data:{full_name:d.full_name,phone:d.phone}}});if(error||!data.user)return $('#nm').innerHTML=msg(error?error.message:'Could not create user',1);
+  await sb.from('profiles').update({approved:true}).eq('id',data.user.id);admin()}}
+function aSet(){aSet0();aPk()}
+function aSet0(){const c=S.cfg,fi=`class="${I}"`;
+ $('#tb').innerHTML=`<form id="sf" class="space-y-3 max-w-md"><label class="block text-sm">Website name<input name="site_name" value="${esc(c.site_name||'Speedometer')}" ${fi}></label><label class="block text-sm">Announcement banner (shown to all users)<textarea name="announcement" rows="2" ${fi}>${esc(c.announcement||'')}</textarea></label><label class="block text-sm">Support phone<input name="support_phone" value="${esc(c.support_phone||'')}" ${fi}></label><label class="block text-sm">Maintenance mode (blocks new orders)<select name="maintenance" ${fi}><option value="off">Off</option><option value="on" ${c.maintenance=='on'?'selected':''}>On</option></select></label><button class="${B}">Save settings</button><div id="sm2"></div></form>`;
+ $('#sf').onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target)),{error}=await sb.from('settings').upsert(Object.entries(d).map(([key,value])=>({key,value})));if(!error)Object.assign(S.cfg,d);$('#sm2').innerHTML=msg(error?error.message:'Settings saved',!!error)}}
+const showErr=m=>{app.innerHTML=`<main class="max-w-md mx-auto p-6 pt-16"><h1 class="text-2xl font-bold text-red-400">Something went wrong</h1><p class="my-3 text-slate-200">${esc(m)}</p><button onclick="location.reload()" class="${B}">Reload</button> <button onclick="sb.auth.signOut().then(()=>location.reload())" class="${B2}">Logout</button></main>`};
+window.addEventListener('error',e=>showErr(e.message));
+window.addEventListener('unhandledrejection',e=>showErr(e.reason&&e.reason.message||String(e.reason)));
+const sq=new URLSearchParams(location.search).get('store');sq?publicStore(sq):boot();
+</script></body></html>
